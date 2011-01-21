@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>ABTestedApp</title>
+  <%= csrf_meta_tag %>
+</head>
+<body>
+
+<%= yield %>
+
+<p>See the <a href="?force_test_key=BASELINE">BASELINE</a> or the <a href="?force_test_key=test1">Test</a></p>
+
+<p>The magic happens in the Google Analytics tracking code. We use a Custom Variable to track which test is being run and can view the data accordingly.</p>
+
+<pre><code>
+  var _gaq = _gaq || [];
+  _gaq.push(['_setAccount', 'YOUR GOOGLE ANALYTICS KEY']);
+  <span style="color: red;">_gaq.push(['_setCustomVar', 1, 'ABTestKey', '&lt;%= @split_test_key %&gt;', 2]);</span>
+  _gaq.push(['_trackPageview']);
+  (function() {
+    var ga = document.createElement('script'); ga.type = 'text/javascript'; ga.async = true;
+    ga.src = ('https:' == document.location.protocol ? 'https://ssl' : 'http://www') + '.google-analytics.com/ga.js';
+    var s = document.getElementsByTagName('script')[0]; s.parentNode.insertBefore(ga, s);
+  })();
+</code></pre>
+
+<script type="text/javascript">
+
+  var _gaq = _gaq || [];
+  _gaq.push(['_setAccount', 'YOUR GOOGLE ANALYTICS KEY']);
+  _gaq.push(['_setCustomVar', 1, 'ABTestKey', '<%= @split_test_key %>', 2]);
+  _gaq.push(['_trackPageview']);
+  (function() {
+    var ga = document.createElement('script'); ga.type = 'text/javascript'; ga.async = true;
+    ga.src = ('https:' == document.location.protocol ? 'https://ssl' : 'http://www') + '.google-analytics.com/ga.js';
+    var s = document.getElementsByTagName('script')[0]; s.parentNode.insertBefore(ga, s);
+  })();
+
+</script>
+</body>
+</html>

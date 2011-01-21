@@ -1,0 +1,8 @@
+# The only difference is the insertion of the test key after the
+# language in the path of the translation. For other languages,
+# just repeate the pattern.
+en:
+  test1:
+    general:
+      index:
+        headline: "Hello A/B Testing World, from Test 1!"

@@ -1,0 +1,187 @@
+diff --git a/app/controllers/application_controller.rb b/app/controllers/application_controller.rb
+index b8e0f9f..bf76ef6 100644
+--- a/app/controllers/application_controller.rb
++++ b/app/controllers/application_controller.rb
+@@ -2,6 +2,7 @@
+ # Likewise, all the methods added will be available for all controllers.
+ class ApplicationController < ActionController::Base
+ 
++  before_filter :setup_split_testing
+   before_filter :check_for_full_site_flag
+   before_filter :set_iphone_format
+ 
+@@ -28,5 +29,39 @@ class ApplicationController < ActionController::Base
+     # iPhone
+     expire_action about_url(:format => :iphone)
+     expire_action picture_list_url(:format => :iphone)
++
++    SPLIT_TESTS.keys.reject { |k| k == 'BASELINE' }.each do |k|
++      expire_action root_url + "index:#{k}"
++      expire_action about_url + ":#{k}"
++      expire_action picture_list_url + ":#{k}"
++      # iPhone
++      expire_action about_url(:format => :iphone) + ":#{k}"
++      expire_action picture_list_url(:format => :iphone) + ":#{k}"
++    end
++  end
++
++  def setup_split_testing
++    @split_test_key = get_split_test_key
++    return if @split_test_key == 'BASELINE' || @split_test_key.nil?
++    split_test_path = preprocessed_pathsets[ApplicationController.custom_view_path(@split_test_key)]
++    prepend_view_path(split_test_path) if split_test_path
++  end
++
++  def get_split_test_key
++    return session[:split_test_key] if session[:split_test_key] && SPLIT_TESTS.has_key?(session[:split_test_key])
++    return session[:split_test_key] = cookies[:split_test_key] if cookies[:split_test_key] && SPLIT_TESTS.has_key?(cookies[:split_test_key])
++    if (request.user_agent =~ /\b(Baidu|Gigabot|Googlebot|libwww-perl|lwp-trivial|msnbot|SiteUptime|Slurp|WordPress|ZIBB|ZyBorg)\b/i)
++      session[:split_test_key] = nil
++    else
++      session[:split_test_key] = ApplicationController.random_test_key
++      cookies[:split_test_key] = session[:split_test_key]
++    end
++    return session[:split_test_key]
++  end
++
++  def custom_cache_path
++    path = ActionCachePath.new(self).path
++    path += ":#{@split_test_key}" if @split_test_key && @split_test_key != 'BASELINE'
++    path
+   end
+ end
+\ No newline at end of file
+diff --git a/app/controllers/general_controller.rb b/app/controllers/general_controller.rb
+index 9d12a39..8bab2df 100644
+--- a/app/controllers/general_controller.rb
++++ b/app/controllers/general_controller.rb
+@@ -1,6 +1,6 @@
+ class GeneralController < ApplicationController
+-  caches_action :pictures, :about
+-  caches_action :index, :unless => Proc.new { |c| c.request.user_agent =~ /(iPhone|iPod)/ }
++  caches_action :pictures, :about, :cache_path => :custom_cache_path.to_proc
++  caches_action :index, :cache_path => :custom_cache_path.to_proc, :unless => Proc.new { |c| c.request.user_agent =~ /(iPhone|iPod)/ }
+ 
+   def index
+     respond_to do |format|
+diff --git a/app/views/layouts/application.html.erb b/app/views/layouts/application.html.erb
+index 7a66a7c..b243c29 100644
+--- a/app/views/layouts/application.html.erb
++++ b/app/views/layouts/application.html.erb
+@@ -25,8 +25,8 @@
+ 
+   var _gaq = _gaq || [];
+   _gaq.push(['_setAccount', 'UA-195712-22']);
++  _gaq.push(['_setCustomVar', 1, 'ABTestKey', '<%= @split_test_key %>', 2]);
+   _gaq.push(['_trackPageview']);
+-
+   (function() {
+     var ga = document.createElement('script'); ga.type = 'text/javascript'; ga.async = true;
+     ga.src = ('https:' == document.location.protocol ? 'https://ssl' : 'http://www') + '.google-analytics.com/ga.js';
+diff --git a/config/initializers/split_testing.rb b/config/initializers/split_testing.rb
+new file mode 100644
+index 0000000..48436db
+--- /dev/null
++++ b/config/initializers/split_testing.rb
+@@ -0,0 +1,77 @@
++# Load the additional view folders so that they can be used on the fly
++ActionController::Base.class_eval do
++
++  SPLIT_TESTS = YAML.load_file("#{RAILS_ROOT}/config/split_tests.yml")
++  SPLIT_TEST_MAP = 
++
++  def self.custom_view_path(name)
++    name == "views" ? "app/views" : "test/split/#{name}/views"
++  end
++
++  def self.random_test_key
++    split_test_map.sample
++  end
++
++#  def self.split_test_map
++#    return @split_test_map if @split_test_map
++#    tm = {} # test map
++#    SPLIT_TESTS.each { |k, v| tm[k] = v['size'].to_i }
++#    @split_test_map = tm.keys.zip(tm.values).collect { |v,d| (0...d).collect { v }}.flatten    
++#  end
++
++  # preprocess some pathsets on boot
++  # doing pathset generation during a request is very costly
++  @@preprocessed_pathsets = begin
++    SPLIT_TESTS.keys.reject { |k| k == 'BASELINE' }.inject({}) do |pathsets, slug|
++      path = ActionController::Base.custom_view_path(slug)
++      pathsets[path] = ActionView::Base.process_view_paths(path).first
++      pathsets
++    end
++  end
++
++  @@split_test_map = begin
++    tm = {} # test map
++    SPLIT_TESTS.each { |k, v| tm[k] = v['size'].to_i }
++    tm.keys.zip(tm.values).collect { |v,d| (0...d).collect { v }}.flatten
++  end
++
++  cattr_accessor :preprocessed_pathsets, :split_test_map
++end
++
++# Add the split test language files to the load path
++I18n.load_path += Dir[Rails.root.join('test', 'split', '*', 'locale.{rb,yml}')]
++
++# Overwrite the translate method so that it tries the bucket translation first
++# TODO: There HAS to be a better way to write this
++module ActionView
++  module Helpers
++    module TranslationHelper
++      def fallback_translate(key, options = {})
++        logger.debug(options)
++        translation = I18n.translate(scope_key_by_partial(key), options.merge!(:raise => true))
++        if html_safe_translation_key?(key) && translation.respond_to?(:html_safe)
++          translation.html_safe
++        else
++          translation
++        end
++      rescue I18n::MissingTranslationData => e
++        keys = I18n.normalize_keys(e.locale, e.key, e.options[:scope])
++        content_tag('span', keys.join(', '), :class => 'translation_missing')
++      end
++
++      def translate(key, options = {})
++        original_options = options.clone
++        options[:scope] = (options[:scope] ? "#{@split_test_key}.#{options[:scope]}" : @split_test_key) if @split_test_key
++        translation = I18n.translate(scope_key_by_partial(key), options.merge!(:raise => true))
++        if html_safe_translation_key?(key) && translation.respond_to?(:html_safe)
++          translation.html_safe
++        else
++          translation
++        end
++      rescue I18n::MissingTranslationData => e
++        fallback_translate(e.key, original_options)
++      end
++      alias t translate
++    end
++  end
++end
+\ No newline at end of file
+diff --git a/config/split_tests.yml b/config/split_tests.yml
+new file mode 100644
+index 0000000..a49321a
+--- /dev/null
++++ b/config/split_tests.yml
+@@ -0,0 +1,6 @@
++BASELINE:
++  description: The baseline. This is a version running the default code.
++  size: 5
++test1:
++  description: Just a simple change to the intro text on the index page
++  size: 5
+diff --git a/test/split/test1/locale.yml b/test/split/test1/locale.yml
+new file mode 100644
+index 0000000..1b3e7cf
+--- /dev/null
++++ b/test/split/test1/locale.yml
+@@ -0,0 +1,5 @@
++en:
++  test1:
++    general:
++      index:
++        intro_html: "Pick a square to put your twitter account on and be part of the wall!<br> If the square you try is already taken by the time you choose it, please choose another."
