@@ -1,30 +1,17 @@
 diff --git a/app/controllers/application_controller.rb b/app/controllers/application_controller.rb
-index b8e0f9f..bf76ef6 100644
+index e8065d9..f0a2e6d 100644
 --- a/app/controllers/application_controller.rb
 +++ b/app/controllers/application_controller.rb
-@@ -2,6 +2,7 @@
- # Likewise, all the methods added will be available for all controllers.
+@@ -1,3 +1,45 @@
  class ApplicationController < ActionController::Base
- 
+   protect_from_forgery
++
 +  before_filter :setup_split_testing
-   before_filter :check_for_full_site_flag
-   before_filter :set_iphone_format
- 
-@@ -28,5 +29,39 @@ class ApplicationController < ActionController::Base
-     # iPhone
-     expire_action about_url(:format => :iphone)
-     expire_action picture_list_url(:format => :iphone)
 +
-+    SPLIT_TESTS.keys.reject { |k| k == 'BASELINE' }.each do |k|
-+      expire_action root_url + "index:#{k}"
-+      expire_action about_url + ":#{k}"
-+      expire_action picture_list_url + ":#{k}"
-+      # iPhone
-+      expire_action about_url(:format => :iphone) + ":#{k}"
-+      expire_action picture_list_url(:format => :iphone) + ":#{k}"
-+    end
-+  end
++  private
 +
++  # If a split_test_key other than BASELINE exists, add the proper
++  # view path to the load paths used by ActionView
 +  def setup_split_testing
 +    @split_test_key = get_split_test_key
 +    return if @split_test_key == 'BASELINE' || @split_test_key.nil?
@@ -32,7 +19,12 @@ index b8e0f9f..bf76ef6 100644
 +    prepend_view_path(split_test_path) if split_test_path
 +  end
 +
++  # Get the existing split_test_key from the session or the cookie.
++  # If there isn't one, or if the one isn't a running test anymore
++  # assign the user a new key and store it. 
++  # Don't assign a key if it is a crawler. (This doesn't feel right)
 +  def get_split_test_key
++    return params[:force_test_key] if params[:force_test_key] # just for testing
 +    return session[:split_test_key] if session[:split_test_key] && SPLIT_TESTS.has_key?(session[:split_test_key])
 +    return session[:split_test_key] = cookies[:split_test_key] if cookies[:split_test_key] && SPLIT_TESTS.has_key?(cookies[:split_test_key])
 +    if (request.user_agent =~ /\b(Baidu|Gigabot|Googlebot|libwww-perl|lwp-trivial|msnbot|SiteUptime|Slurp|WordPress|ZIBB|ZyBorg)\b/i)
@@ -44,51 +36,91 @@ index b8e0f9f..bf76ef6 100644
 +    return session[:split_test_key]
 +  end
 +
++  # For caching, we need to add something to the cache_path
++  # so that it caches each version of the page seperately.
++  # Ideally, this would be added into the ActionCaching 
++  # module directly so that you don't need to specify anything
++  # in the caches_action command
 +  def custom_cache_path
 +    path = ActionCachePath.new(self).path
 +    path += ":#{@split_test_key}" if @split_test_key && @split_test_key != 'BASELINE'
 +    path
-   end
++  end
++
  end
-\ No newline at end of file
 diff --git a/app/controllers/general_controller.rb b/app/controllers/general_controller.rb
-index 9d12a39..8bab2df 100644
---- a/app/controllers/general_controller.rb
+new file mode 100644
+index 0000000..2a7bb57
+--- /dev/null
 +++ b/app/controllers/general_controller.rb
-@@ -1,6 +1,6 @@
- class GeneralController < ApplicationController
--  caches_action :pictures, :about
--  caches_action :index, :unless => Proc.new { |c| c.request.user_agent =~ /(iPhone|iPod)/ }
-+  caches_action :pictures, :about, :cache_path => :custom_cache_path.to_proc
-+  caches_action :index, :cache_path => :custom_cache_path.to_proc, :unless => Proc.new { |c| c.request.user_agent =~ /(iPhone|iPod)/ }
- 
-   def index
-     respond_to do |format|
+@@ -0,0 +1,8 @@
++class GeneralController < ApplicationController
++  # Uses the custom_cache_path from ApplicationController
++  # to make sure the right split test is cached
++  caches_action :index, :cache_path => :custom_cache_path.to_proc
++
++  def index
++  end
++end
 diff --git a/app/views/layouts/application.html.erb b/app/views/layouts/application.html.erb
-index 7a66a7c..b243c29 100644
+index a0b7129..f423414 100644
 --- a/app/views/layouts/application.html.erb
 +++ b/app/views/layouts/application.html.erb
-@@ -25,8 +25,8 @@
+@@ -1,14 +1,41 @@
+ <!DOCTYPE html>
+ <html>
+ <head>
+-  <title>ABTest2</title>
+-  <%= stylesheet_link_tag :all %>
+-  <%= javascript_include_tag :defaults %>
++  <title>ABTestedApp</title>
+   <%= csrf_meta_tag %>
+ </head>
+ <body>
  
-   var _gaq = _gaq || [];
-   _gaq.push(['_setAccount', 'UA-195712-22']);
+ <%= yield %>
+ 
++<p>See the <a href="?force_test_key=BASELINE">BASELINE</a> or the <a href="?force_test_key=test1">Test</a></p>
++
++<p>The magic happens in the Google Analytics tracking code. We use a Custom Variable to track which test is being run and can view the data accordingly.</p>
++
++<pre><code>
++  var _gaq = _gaq || [];
++  _gaq.push(['_setAccount', 'YOUR GOOGLE ANALYTICS KEY']);
++  <span style="color: red;">_gaq.push(['_setCustomVar', 1, 'ABTestKey', '&lt;%= @split_test_key %&gt;', 2]);</span>
++  _gaq.push(['_trackPageview']);
++  (function() {
++    var ga = document.createElement('script'); ga.type = 'text/javascript'; ga.async = true;
++    ga.src = ('https:' == document.location.protocol ? 'https://ssl' : 'http://www') + '.google-analytics.com/ga.js';
++    var s = document.getElementsByTagName('script')[0]; s.parentNode.insertBefore(ga, s);
++  })();
++</code></pre>
++
++<script type="text/javascript">
++
++  var _gaq = _gaq || [];
++  _gaq.push(['_setAccount', 'YOUR GOOGLE ANALYTICS KEY']);
 +  _gaq.push(['_setCustomVar', 1, 'ABTestKey', '<%= @split_test_key %>', 2]);
-   _gaq.push(['_trackPageview']);
--
-   (function() {
-     var ga = document.createElement('script'); ga.type = 'text/javascript'; ga.async = true;
-     ga.src = ('https:' == document.location.protocol ? 'https://ssl' : 'http://www') + '.google-analytics.com/ga.js';
++  _gaq.push(['_trackPageview']);
++  (function() {
++    var ga = document.createElement('script'); ga.type = 'text/javascript'; ga.async = true;
++    ga.src = ('https:' == document.location.protocol ? 'https://ssl' : 'http://www') + '.google-analytics.com/ga.js';
++    var s = document.getElementsByTagName('script')[0]; s.parentNode.insertBefore(ga, s);
++  })();
++
++</script>
+ </body>
+ </html>
 diff --git a/config/initializers/split_testing.rb b/config/initializers/split_testing.rb
 new file mode 100644
-index 0000000..48436db
+index 0000000..670e992
 --- /dev/null
 +++ b/config/initializers/split_testing.rb
-@@ -0,0 +1,77 @@
+@@ -0,0 +1,68 @@
 +# Load the additional view folders so that they can be used on the fly
 +ActionController::Base.class_eval do
 +
 +  SPLIT_TESTS = YAML.load_file("#{RAILS_ROOT}/config/split_tests.yml")
-+  SPLIT_TEST_MAP = 
 +
 +  def self.custom_view_path(name)
 +    name == "views" ? "app/views" : "test/split/#{name}/views"
@@ -97,13 +129,6 @@ index 0000000..48436db
 +  def self.random_test_key
 +    split_test_map.sample
 +  end
-+
-+#  def self.split_test_map
-+#    return @split_test_map if @split_test_map
-+#    tm = {} # test map
-+#    SPLIT_TESTS.each { |k, v| tm[k] = v['size'].to_i }
-+#    @split_test_map = tm.keys.zip(tm.values).collect { |v,d| (0...d).collect { v }}.flatten    
-+#  end
 +
 +  # preprocess some pathsets on boot
 +  # doing pathset generation during a request is very costly
@@ -133,7 +158,6 @@ index 0000000..48436db
 +  module Helpers
 +    module TranslationHelper
 +      def fallback_translate(key, options = {})
-+        logger.debug(options)
 +        translation = I18n.translate(scope_key_by_partial(key), options.merge!(:raise => true))
 +        if html_safe_translation_key?(key) && translation.respond_to?(:html_safe)
 +          translation.html_safe
@@ -162,12 +186,29 @@ index 0000000..48436db
 +  end
 +end
 \ No newline at end of file
+diff --git a/config/locales/en.yml b/config/locales/en.yml
+index a747bfa..e32dc54 100644
+--- a/config/locales/en.yml
++++ b/config/locales/en.yml
+@@ -1,5 +1,4 @@
+-# Sample localization file for English. Add more files in this directory for other locales.
+-# See http://github.com/svenfuchs/rails-i18n/tree/master/rails%2Flocale for starting points.
+-
+ en:
+-  hello: "Hello world"
++  general:
++    index:
++      headline: "Hello A/B Testing World!"
 diff --git a/config/split_tests.yml b/config/split_tests.yml
 new file mode 100644
-index 0000000..a49321a
+index 0000000..a0b3b8e
 --- /dev/null
 +++ b/config/split_tests.yml
-@@ -0,0 +1,6 @@
+@@ -0,0 +1,10 @@
++# Size represents the percent of traffic you want for each test
++# The total of all sizes should equal 100% of traffic.
++# It's easiest to think of it as being based out of 10 or 100.
++# Right now, we are running a 50/50 traffic split
 +BASELINE:
 +  description: The baseline. This is a version running the default code.
 +  size: 5
@@ -176,12 +217,26 @@ index 0000000..a49321a
 +  size: 5
 diff --git a/test/split/test1/locale.yml b/test/split/test1/locale.yml
 new file mode 100644
-index 0000000..1b3e7cf
+index 0000000..d70bb90
 --- /dev/null
 +++ b/test/split/test1/locale.yml
-@@ -0,0 +1,5 @@
+@@ -0,0 +1,8 @@
++# The only difference is the insertion of the test key after the
++# language in the path of the translation. For other languages,
++# just repeate the pattern.
 +en:
 +  test1:
 +    general:
 +      index:
-+        intro_html: "Pick a square to put your twitter account on and be part of the wall!<br> If the square you try is already taken by the time you choose it, please choose another."
++        headline: "Hello A/B Testing World, from Test 1!"
+\ No newline at end of file
+diff --git a/test/split/test1/views/general/about.html.erb b/test/split/test1/views/general/about.html.erb
+new file mode 100644
+index 0000000..ebc381a
+--- /dev/null
++++ b/test/split/test1/views/general/about.html.erb
+@@ -0,0 +1,3 @@
++<h1>This is the tested page</h1>
++
++<p>This page is defined in the test/split/test1/views/general path and is part of your test layout.</p>
+\ No newline at end of file
