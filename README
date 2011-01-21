@@ -2,7 +2,7 @@
 
 This is a demo of the split testing code that I wrote for doing split testing in a rails application with Google Analytics as your dashboard.
 
-The code quality isn't as high as I would like and it basically just works. I am in the process of abstracting the necessary pieces and turning it into a gem.
+The code quality isn't as high as I would like and it basically just works. I am in the process of abstracting the necessary pieces, cleaning up the code and turning it into a gem. I would love any help or input. :)
 
 The files that you will want to look at right now are:
   app/controllers/application_controller.rb
